@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -64,16 +66,16 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 	type errorJson struct {
 		Error string `json:"error"`
-    }
+	}
 	type validJson struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		errPayload := errorJson {
+		errPayload := errorJson{
 			Error: "something went wrong",
 		}
 		dat, err := json.Marshal(errPayload)
@@ -83,9 +85,9 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-    	w.WriteHeader(400)
-    	w.Write(dat)
-		
+		w.WriteHeader(400)
+		w.Write(dat)
+
 	}
 	if len(params.Body) > 140 {
 		errPayload := errorJson{
@@ -98,12 +100,23 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-    	w.WriteHeader(400)
-    	w.Write(dat)
+		w.WriteHeader(400)
+		w.Write(dat)
 
 	} else {
+
+		stringSlice := strings.Split(params.Body, " ")
+		profaneWords := []string{"kerfuffle", "sharbert", "fornax"}
+
+		for i, val := range stringSlice {
+			if slices.Contains(profaneWords, strings.ToLower(val)) {
+				stringSlice[i] = "****"
+			}
+		}
+		nonProfane := strings.Join(stringSlice, " ")
+
 		validPayload := validJson{
-			Valid: true,
+			CleanedBody: nonProfane,
 		}
 		dat, err := json.Marshal(validPayload)
 		if err != nil {
@@ -112,8 +125,8 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-    	w.WriteHeader(200)
-    	w.Write(dat)
+		w.WriteHeader(200)
+		w.Write(dat)
 
 	}
 
@@ -125,3 +138,6 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	cfg.fileserverHits.Store(0)
 	w.Write([]byte("successfully reset."))
 }
+
+// respondWithError(w http.ResponseWriter, code int, msg string)
+// respondWithJSON(w http.ResponseWriter, code int, payload interface{})
