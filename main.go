@@ -48,6 +48,7 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	serveMux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	serveMux.HandleFunc("POST /api/users", handlerUsers)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -79,12 +80,19 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(responseString))
 }
 
+func handlerUsers(w http.ResponseWriter, r *http.Request){
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+
+}
+
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
-	}
-	type errorJson struct {
-		Error string `json:"error"`
 	}
 	type validJson struct {
 		CleanedBody string `json:"cleaned_body"`
@@ -94,34 +102,10 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		errPayload := errorJson{
-			Error: "something went wrong",
-		}
-		dat, err := json.Marshal(errPayload)
-		if err != nil {
-			w.WriteHeader(500)
-			log.Panicf("error while marshaling the json")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		w.Write(dat)
-
+		respondWithError(w , 400, "something went wrong")
 	}
 	if len(params.Body) > 140 {
-		errPayload := errorJson{
-			Error: "Chirp is too long",
-		}
-		dat, err := json.Marshal(errPayload)
-		if err != nil {
-			w.WriteHeader(500)
-			log.Panicf("error while marshaling the json")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
-		w.Write(dat)
-
+		respondWithError(w, 400, "Chirp is too long")
 	} else {
 
 		stringSlice := strings.Split(params.Body, " ")
@@ -137,16 +121,8 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 		validPayload := validJson{
 			CleanedBody: nonProfane,
 		}
-		dat, err := json.Marshal(validPayload)
-		if err != nil {
-			w.WriteHeader(500)
-			log.Panicf("error while marshaling the json")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		w.Write(dat)
-
+		
+		respondWithJSON(w, 200,validPayload)
 	}
 
 }
@@ -158,5 +134,33 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("successfully reset."))
 }
 
-// respondWithError(w http.ResponseWriter, code int, msg string)
-// respondWithJSON(w http.ResponseWriter, code int, payload interface{})
+func respondWithError(w http.ResponseWriter, code int, msg string){
+	type errorJson struct {
+		Error string `json:"error"`
+	}
+	errPayLoad := errorJson{Error: msg}
+	dat, err := json.Marshal(errPayLoad)
+	if err != nil {
+		w.WriteHeader(500)
+		log.Panicf("error while marshaling the json")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(dat)
+	
+}
+
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}){
+	dat, err := json.Marshal(payload)
+	if err != nil {
+		w.WriteHeader(500)
+		log.Panicf("error while marshaling the json")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(dat)
+}
