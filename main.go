@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/ssd-81/chirpy/internal/auth"
 	"github.com/ssd-81/chirpy/internal/database"
 )
 
@@ -37,6 +38,11 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type authParameters struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 func main() {
@@ -70,8 +76,9 @@ func main() {
 	// serveMux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUsers)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handlerChirp)
+	serveMux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpGet)
-	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGetOne)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGetSingle)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -104,18 +111,25 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Email string `json:"email"`
-	}
 
 	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
+	params := authParameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, "something went wrong")
 	}
+	// create an struct for passing to CreateUser
+	hashedPass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Panic("error while hashing the password")
+	}
+	userParams := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPass,
+	}
 	// w.Write([]byte("HTTP 201 Created"))
-	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	user, err := cfg.dbQueries.CreateUser(r.Context(), userParams)
+
 	// using User struct for controlling json keys
 	userJson := User{
 		ID:        user.ID,
@@ -131,17 +145,61 @@ func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+
+	type responseJson struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	var logParams authParameters
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&logParams)
+	if err != nil {
+		log.Print("error while decoding json")
+		respondWithError(w, 404, "internal error occured")
+	}
+	log.Printf("input payload :%v", logParams)
+
+	user, err := cfg.dbQueries.GetSpecificUser(r.Context(), logParams.Email)
+	if err != nil {
+		respondWithError(w, 404, "not found")
+		return
+	}
+	// hashPass, _ := auth.HashPassword(logParams.Password)
+	// this is likely a mistake (we will look into the matter)
+	// if user.HashedPassword != hashPass {
+	// 	log.Printf("password: %v", logParams.Password)
+	// 	log.Printf("user hash:%v hashpass :%v ", user.HashedPassword, hashPass)
+	// 	respondWithError(w, 401, "401 unauthorized")
+	// 	return
+	// }
+
+	err = auth.CheckPasswordHash(logParams.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, 401, "401 unauthorized")
+		return
+	}
+
+	returnPayload := responseJson{
+		Id:        user.ID,
+		UpdatedAt: user.UpdatedAt,
+		CreatedAt: user.CreatedAt,
+		Email:     user.Email,
+	}
+
+	respondWithJSON(w, 200, returnPayload)
+
+}
+
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body   string    `json:"body"`
-		UserId uuid.UUID `json:"user_id"` // skeptical if this going to work as expected
+		UserId uuid.UUID `json:"user_id"`
 	}
 
-	// type validJson struct {
-	// 	CleanedBody string `json:"cleaned_body"`
-	// }
-
-	// validating if the chirp is valid
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -202,10 +260,24 @@ func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func (cfg *apiConfig) handlerChirpGetOne(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerChirpGetSingle(w http.ResponseWriter, r *http.Request) {
+	// retrieving specific user in the requested GET endpoint
 	Cid := r.PathValue("chirpID")
-	// formattedCid :=
-	cfg.dbQueries.GetChirp(r.Context(), formattedCid)
+	formattedCid := uuid.MustParse(Cid) // converts string to UUID
+	chirp, err := cfg.dbQueries.GetChirp(r.Context(), formattedCid)
+	if err != nil {
+		log.Printf("error encountered while searching for chirp (GET)")
+		respondWithError(w, 404, "user_id does not exist in db")
+		return
+	}
+	fChirp := formattedChirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	respondWithJSON(w, 200, fChirp)
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
