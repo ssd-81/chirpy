@@ -55,3 +55,6 @@ func TestVerifyJWTToken(t * testing.T) {
 	}
 }
 
+// func TestTokenExists(t *testing.T) {
+
+// }

@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	serverSecret   string
 }
 
 type formattedChirp struct {
@@ -41,8 +42,9 @@ type User struct {
 }
 
 type authParameters struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email     string        `json:"email"`
+	Password  string        `json:"password"`
+	ExpiresIn time.Duration `json:"expires_in_seconds"`
 }
 
 func main() {
@@ -50,6 +52,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	serverSecret := os.Getenv("SEREVER_SECRET")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -61,6 +64,7 @@ func main() {
 	apiCfg := apiConfig{}
 	apiCfg.dbQueries = dbQuer
 	apiCfg.platform = platform
+	apiCfg.serverSecret = serverSecret
 	serveMux := http.NewServeMux()
 	// serveMux.Handle("/app/", http.StripPrefix("/app", http.FileServer(http.Dir("."))))
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
@@ -95,8 +99,11 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		cfg.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
-
 }
+
+// func (cfg *apiConfig) middlewareVerifyJWT(httpHandler http.Handler) http.Handler {
+
+// }
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -152,6 +159,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
+		Token     string    `json:"token"`
 	}
 
 	var logParams authParameters
@@ -162,12 +170,19 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 404, "internal error occured")
 	}
 	log.Printf("input payload :%v", logParams)
+	// keep an eye on this part
+	// the logParams ExpiresIn param is optional; if the requester sets it and it is less than 1 hr
+	// it will be the same; else, in other cases it will be defaulted to 1 hour
+	if logParams.ExpiresIn == 0 && logParams.ExpiresIn > (60*time.Minute) {
+		logParams.ExpiresIn = 60 * time.Minute
+	}
 
 	user, err := cfg.dbQueries.GetSpecificUser(r.Context(), logParams.Email)
 	if err != nil {
 		respondWithError(w, 404, "not found")
 		return
 	}
+
 	// hashPass, _ := auth.HashPassword(logParams.Password)
 	// this is likely a mistake (we will look into the matter)
 	// if user.HashedPassword != hashPass {
@@ -176,11 +191,19 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	// 	respondWithError(w, 401, "401 unauthorized")
 	// 	return
 	// }
+	// the above approach does not work because of something called salt in cryptography
+	// salt provides randomness in a way
+	// do further reading to really understand the idea
 
 	err = auth.CheckPasswordHash(logParams.Password, user.HashedPassword)
 	if err != nil {
 		respondWithError(w, 401, "401 unauthorized")
 		return
+	}
+	// is serverSecret the right choice for secret string
+	token, err := auth.MakeJWT(user.ID, cfg.serverSecret, logParams.ExpiresIn)
+	if err != nil {
+		log.Fatal("error while creation of token")
 	}
 
 	returnPayload := responseJson{
@@ -188,6 +211,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: user.UpdatedAt,
 		CreatedAt: user.CreatedAt,
 		Email:     user.Email,
+		Token:     token,
 	}
 
 	respondWithJSON(w, 200, returnPayload)
@@ -197,7 +221,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body   string    `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
+		// UserId uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -205,9 +229,21 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, "something went wrong")
+		return 
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "could not get Bearer token")
+		return 
+	}
+	userId, err := auth.ValidateJWT(token, cfg.serverSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid jwt")
+		return 
 	}
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
+		return 
 	} else {
 
 		stringSlice := strings.Split(params.Body, " ")
@@ -220,20 +256,26 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		}
 		nonProfane := strings.Join(stringSlice, " ")
 
+		// chirpParams := database.CreateChirpParams{
+		// 	Body:   nonProfane,
+		// 	UserID: uuid.NullUUID{UUID: params.UserId, Valid: true},
+		// }
 		chirpParams := database.CreateChirpParams{
 			Body:   nonProfane,
-			UserID: uuid.NullUUID{UUID: params.UserId, Valid: true},
+			UserID: uuid.NullUUID{UUID: userId, Valid: true},
 		}
 		chirp, err := cfg.dbQueries.CreateChirp(r.Context(), chirpParams)
+		
+		if err != nil {
+			respondWithError(w, 500, "chirp could not be created. try again.")
+			return
+		}
 		strChirp := formattedChirp{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
 			UserID:    chirp.UserID,
-		}
-		if err != nil {
-			respondWithError(w, 404, "chirp could be created. try again.")
 		}
 		respondWithJSON(w, 201, strChirp)
 
