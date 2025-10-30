@@ -52,7 +52,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
-	serverSecret := os.Getenv("SEREVER_SECRET")
+	serverSecret := os.Getenv("SER1VER_SECRET")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -173,7 +173,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	// keep an eye on this part
 	// the logParams ExpiresIn param is optional; if the requester sets it and it is less than 1 hr
 	// it will be the same; else, in other cases it will be defaulted to 1 hour
-	if logParams.ExpiresIn == 0 && logParams.ExpiresIn > (60*time.Minute) {
+	if logParams.ExpiresIn == 0 || logParams.ExpiresIn > (60*time.Minute) {
 		logParams.ExpiresIn = 60 * time.Minute
 	}
 
