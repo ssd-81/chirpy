@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -42,9 +43,9 @@ type User struct {
 }
 
 type authParameters struct {
-	Email     string        `json:"email"`
-	Password  string        `json:"password"`
-	ExpiresIn time.Duration `json:"expires_in_seconds"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	// ExpiresIn time.Duration `json:"expires_in_seconds"`
 }
 
 func main() {
@@ -52,7 +53,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
-	serverSecret := os.Getenv("SER1VER_SECRET")
+	serverSecret := os.Getenv("SERVER_SECRET")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -81,6 +82,8 @@ func main() {
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUsers)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handlerChirp)
 	serveMux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpGet)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGetSingle)
 
@@ -155,11 +158,12 @@ func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 
 	type responseJson struct {
-		Id        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-		Token     string    `json:"token"`
+		Id           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		RefreshToken string    `json:"refresh_token"`
+		Token        string    `json:"token"`
 	}
 
 	var logParams authParameters
@@ -173,13 +177,14 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	// keep an eye on this part
 	// the logParams ExpiresIn param is optional; if the requester sets it and it is less than 1 hr
 	// it will be the same; else, in other cases it will be defaulted to 1 hour
-	if logParams.ExpiresIn == 0 || logParams.ExpiresIn > (60*time.Minute) {
-		logParams.ExpiresIn = 60 * time.Minute
-	}
+	// not required any more
+	// if logParams.ExpiresIn == 0 || logParams.ExpiresIn > (60*time.Minute) {
+	// 	logParams.ExpiresIn = 60 * time.Minute
+	// }
 
 	user, err := cfg.dbQueries.GetSpecificUser(r.Context(), logParams.Email)
 	if err != nil {
-		respondWithError(w, 404, "not found")
+		respondWithError(w, 404, "user not found")
 		return
 	}
 
@@ -200,18 +205,40 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "401 unauthorized")
 		return
 	}
-	// is serverSecret the right choice for secret string
-	token, err := auth.MakeJWT(user.ID, cfg.serverSecret, logParams.ExpiresIn)
+
+	// the time is fixed for the expiration of the access token
+	token, err := auth.MakeJWT(user.ID, cfg.serverSecret, 60*time.Minute)
 	if err != nil {
 		log.Fatal("error while creation of token")
 	}
 
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, 500, "internal server error")
+		return
+	}
+
+	// creating the refresh token entry for the user in the database
+	// check for revokedAt; it might cause the tests to fail
+	refreshTokensParams := database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		RevokedAt: sql.NullTime{},
+	}
+
+	// do I need this somewhere?
+	_, err = cfg.dbQueries.CreateRefreshToken(r.Context(), refreshTokensParams)
+	if err != nil {
+		respondWithError(w, 500, "could not create refresh token")
+	}
+
 	returnPayload := responseJson{
-		Id:        user.ID,
-		UpdatedAt: user.UpdatedAt,
-		CreatedAt: user.CreatedAt,
-		Email:     user.Email,
-		Token:     token,
+		Id:           user.ID,
+		UpdatedAt:    user.UpdatedAt,
+		CreatedAt:    user.CreatedAt,
+		Email:        user.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 
 	respondWithJSON(w, 200, returnPayload)
@@ -220,7 +247,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body   string    `json:"body"`
+		Body string `json:"body"`
 		// UserId uuid.UUID `json:"user_id"`
 	}
 
@@ -229,21 +256,26 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, "something went wrong")
-		return 
+		return
 	}
-	token, err := auth.GetBearerToken(r.Header)
+	// this is likely going to be refresh token and not jwt 
+	// token, err := auth.GetBearerToken(r.Header)
+	jwtToken , err := auth.GetBearerToken(r.Header)
 	if err != nil {
-		respondWithError(w, 401, "could not get Bearer token")
-		return 
+		respondWithError(w, 401, "could not get Refresh token")
+		return
 	}
-	userId, err := auth.ValidateJWT(token, cfg.serverSecret)
+	// userId, err := cfg.dbQueries.GetUserFromRefreshToken(r.Context(), refreshToken)  // experimental 
+	// userId, err := auth.ValidateJWT(token, cfg.serverSecret)
+	userId, err := auth.ValidateJWT(jwtToken, cfg.serverSecret)
+	log.Println("267: ", userId)  // for testing purpose 
 	if err != nil {
 		respondWithError(w, 401, "invalid jwt")
-		return 
+		return
 	}
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
-		return 
+		return
 	} else {
 
 		stringSlice := strings.Split(params.Body, " ")
@@ -265,7 +297,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 			UserID: uuid.NullUUID{UUID: userId, Valid: true},
 		}
 		chirp, err := cfg.dbQueries.CreateChirp(r.Context(), chirpParams)
-		
+
 		if err != nil {
 			respondWithError(w, 500, "chirp could not be created. try again.")
 			return
@@ -335,6 +367,85 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	// w.Write([]byte("successfully reset."))
 	w.Write([]byte("accessing this dangerous endpoint locally"))
 
+}
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+
+	type parameters struct {
+		Token string `json:"token"`
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "could not get Bearer token")
+		return
+	}
+	refreshToken, err := cfg.dbQueries.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 401, "no refresh token found")
+			return
+		} else {
+			respondWithError(w, 400, "invalid refresh token")
+			return
+		}
+	}
+	// make sure this works as expected
+	if refreshToken.ExpiresAt.Time.Before(time.Now()) {
+		respondWithError(w, 401, "refresh token expired")
+		return
+	}
+
+	// if refreshToken.RevokedAt.Time.Before(time.Now()) {
+		// respondWithError(w, 401, "refresh token revoked")
+		// return 
+	// }
+
+	if refreshToken.RevokedAt.Valid {
+		respondWithError(w, 401, "refresh token revoked")
+		return 
+	}
+
+	// creating access token for the user
+	// make sure the idea is solid; not sure if i am thinking right.
+	// double check this section
+	userID, err := cfg.dbQueries.GetUserFromRefreshToken(r.Context(), token)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 401, "no user found with the given refresh token")
+			return
+		} else {
+			respondWithError(w, 400, "invalid token")
+			return
+		}
+	}
+
+	accessToken, err := auth.MakeJWT(userID, cfg.serverSecret, 60*time.Minute)
+	if err != nil {
+		respondWithError(w, 500, "failed to generate access token")
+	}
+	sendPayload := parameters{
+		Token: accessToken,
+	}
+	respondWithJSON(w, 200, sendPayload)
+
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "could not get Bearer token")
+		return
+	}
+	err = cfg.dbQueries.RevokeRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 500, "failed to revoke the refresh token")
+		return 
+	}
+	
+	// no payload
+	w.WriteHeader(204) // 204 ⇒ implies success; no payload 
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

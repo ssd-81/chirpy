@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -87,17 +89,24 @@ func GetBearerToken(headers http.Header) (string, error) {
 	if bToken == "" {
 		return "", fmt.Errorf("no authorization header receiveed")
 	}
-	
+
 	splitB := strings.Split(strings.TrimSpace(bToken), " ")
-	tokenStr := "" 
+	tokenStr := ""
 	if len(splitB) == 2 {
 		temp := splitB[0]
-		if temp != "Bearer"{
+		if temp != "Bearer" {
 			return "", fmt.Errorf("invalid authorization token received")
 		}
 		tokenStr = strings.TrimSpace(splitB[1])
 	} else {
 		return "", fmt.Errorf("header Authorization does not contain token string")
 	}
-	return tokenStr, nil 
+	return tokenStr, nil
+}
+
+func MakeRefreshToken() (string, error) {
+	key := make([]byte, 32)
+	rand.Read(key) // Read never fails; that's a claim from official docs 
+	encodedStr := hex.EncodeToString(key)
+	return encodedStr, nil 
 }
