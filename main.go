@@ -84,6 +84,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+	serveMux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpGet)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGetSingle)
 
@@ -258,17 +259,15 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "something went wrong")
 		return
 	}
-	// this is likely going to be refresh token and not jwt 
-	// token, err := auth.GetBearerToken(r.Header)
-	jwtToken , err := auth.GetBearerToken(r.Header)
+	jwtToken, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, 401, "could not get Refresh token")
 		return
 	}
-	// userId, err := cfg.dbQueries.GetUserFromRefreshToken(r.Context(), refreshToken)  // experimental 
+	// userId, err := cfg.dbQueries.GetUserFromRefreshToken(r.Context(), refreshToken)  // experimental
 	// userId, err := auth.ValidateJWT(token, cfg.serverSecret)
 	userId, err := auth.ValidateJWT(jwtToken, cfg.serverSecret)
-	log.Println("267: ", userId)  // for testing purpose 
+	log.Println("267: ", userId) // for testing purpose
 	if err != nil {
 		respondWithError(w, 401, "invalid jwt")
 		return
@@ -294,7 +293,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 		// }
 		chirpParams := database.CreateChirpParams{
 			Body:   nonProfane,
-			UserID: uuid.NullUUID{UUID: userId, Valid: true},
+			UserID: userId,
 		}
 		chirp, err := cfg.dbQueries.CreateChirp(r.Context(), chirpParams)
 
@@ -307,7 +306,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
-			UserID:    chirp.UserID,
+			UserID:    uuid.NullUUID{UUID: chirp.UserID, Valid: true},
 		}
 		respondWithJSON(w, 201, strChirp)
 
@@ -326,7 +325,7 @@ func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: val.CreatedAt,
 			UpdatedAt: val.UpdatedAt,
 			Body:      val.Body,
-			UserID:    val.UserID,
+			UserID:    uuid.NullUUID{UUID: val.UserID, Valid: true},
 		}
 		slice = append(slice, temp)
 	}
@@ -349,7 +348,7 @@ func (cfg *apiConfig) handlerChirpGetSingle(w http.ResponseWriter, r *http.Reque
 		CreatedAt: chirp.CreatedAt,
 		UpdatedAt: chirp.UpdatedAt,
 		Body:      chirp.Body,
-		UserID:    chirp.UserID,
+		UserID:    uuid.NullUUID{UUID: chirp.UserID, Valid: true},
 	}
 	respondWithJSON(w, 200, fChirp)
 }
@@ -397,13 +396,13 @@ func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// if refreshToken.RevokedAt.Time.Before(time.Now()) {
-		// respondWithError(w, 401, "refresh token revoked")
-		// return 
+	// respondWithError(w, 401, "refresh token revoked")
+	// return
 	// }
 
 	if refreshToken.RevokedAt.Valid {
 		respondWithError(w, 401, "refresh token revoked")
-		return 
+		return
 	}
 
 	// creating access token for the user
@@ -440,12 +439,74 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	err = cfg.dbQueries.RevokeRefreshToken(r.Context(), token)
 	if err != nil {
 		respondWithError(w, 500, "failed to revoke the refresh token")
-		return 
+		return
 	}
-	
+
 	// no payload
-	w.WriteHeader(204) // 204 ⇒ implies success; no payload 
+	w.WriteHeader(204) // 204 ⇒ implies success; no payload
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	type responsePayload struct {
+		Id        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 401, "something went wrong")
+		return
+	}
+	jwtToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "could not get access token")
+		return
+	}
+
+	userId, err := auth.ValidateJWT(jwtToken, cfg.serverSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid jwt")
+		return
+	}
+	// hashing the password
+	hashedPass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, "error while hashing the password")
+		return
+	}
+	dbParams := database.UpdateEmailAndPasswordParams{
+		Email:          params.Email,
+		HashedPassword: hashedPass,
+		ID:             userId,
+	}
+	err = cfg.dbQueries.UpdateEmailAndPassword(r.Context(), dbParams)
+	if err != nil {
+		respondWithError(w, 500, "could not update email and password")
+		return
+	}
+	updatedUser, err := cfg.dbQueries.GetSpecificUserWithoutPassword(r.Context(), userId)
+	rp := responsePayload{
+		Id: updatedUser.Email,
+		CreatedAt: updatedUser.UpdatedAt,
+		UpdatedAt: updatedUser.UpdatedAt,
+		Email: updatedUser.Email,
+	}
+	if err != nil {
+		respondWithError(w, 500, "could not retrieve updated user")
+	}
+	log.Print(rp)
+	respondWithJSON(w, 200, rp)
+
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {

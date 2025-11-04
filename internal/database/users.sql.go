@@ -7,6 +7,9 @@ package database
 
 import (
 	"context"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 const createUser = `-- name: CreateUser :one
@@ -64,4 +67,48 @@ func (q *Queries) GetSpecificUser(ctx context.Context, email string) (User, erro
 		&i.HashedPassword,
 	)
 	return i, err
+}
+
+const getSpecificUserWithoutPassword = `-- name: GetSpecificUserWithoutPassword :one
+SELECT id, created_at, updated_at, email FROM users
+WHERE id = $1
+LIMIT 1
+`
+
+type GetSpecificUserWithoutPasswordRow struct {
+	ID        uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Email     string
+}
+
+func (q *Queries) GetSpecificUserWithoutPassword(ctx context.Context, id uuid.UUID) (GetSpecificUserWithoutPasswordRow, error) {
+	row := q.db.QueryRowContext(ctx, getSpecificUserWithoutPassword, id)
+	var i GetSpecificUserWithoutPasswordRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+	)
+	return i, err
+}
+
+const updateEmailAndPassword = `-- name: UpdateEmailAndPassword :exec
+UPDATE users SET 
+updated_at = NOW(),
+email = $1,
+hashed_password = $2
+WHERE id = $3
+`
+
+type UpdateEmailAndPasswordParams struct {
+	Email          string
+	HashedPassword string
+	ID             uuid.UUID
+}
+
+func (q *Queries) UpdateEmailAndPassword(ctx context.Context, arg UpdateEmailAndPasswordParams) error {
+	_, err := q.db.ExecContext(ctx, updateEmailAndPassword, arg.Email, arg.HashedPassword, arg.ID)
+	return err
 }
