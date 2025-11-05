@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +22,7 @@ VALUES (
     $1,
     $2
 )
-RETURNING id, created_at, updated_at, email, hashed_password
+RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -38,6 +39,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -52,7 +54,7 @@ func (q *Queries) DeleteUsers(ctx context.Context) error {
 }
 
 const getSpecificUser = `-- name: GetSpecificUser :one
-SELECT id, created_at, updated_at, email, hashed_password FROM users
+SELECT id, created_at, updated_at, email, hashed_password, is_chirpy_red FROM users
 WHERE email = $1
 `
 
@@ -65,21 +67,23 @@ func (q *Queries) GetSpecificUser(ctx context.Context, email string) (User, erro
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const getSpecificUserWithoutPassword = `-- name: GetSpecificUserWithoutPassword :one
-SELECT id, created_at, updated_at, email FROM users
+SELECT id, created_at, updated_at, email, is_chirpy_red FROM users
 WHERE id = $1
 LIMIT 1
 `
 
 type GetSpecificUserWithoutPasswordRow struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Email     string
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Email       string
+	IsChirpyRed sql.NullBool
 }
 
 func (q *Queries) GetSpecificUserWithoutPassword(ctx context.Context, id uuid.UUID) (GetSpecificUserWithoutPasswordRow, error) {
@@ -90,6 +94,7 @@ func (q *Queries) GetSpecificUserWithoutPassword(ctx context.Context, id uuid.UU
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -110,5 +115,17 @@ type UpdateEmailAndPasswordParams struct {
 
 func (q *Queries) UpdateEmailAndPassword(ctx context.Context, arg UpdateEmailAndPasswordParams) error {
 	_, err := q.db.ExecContext(ctx, updateEmailAndPassword, arg.Email, arg.HashedPassword, arg.ID)
+	return err
+}
+
+const upgradeUserToChirpyRed = `-- name: UpgradeUserToChirpyRed :exec
+UPDATE users SET
+updated_at = NOW(),
+is_chirpy_red = TRUE
+WHERE id = $1
+`
+
+func (q *Queries) UpgradeUserToChirpyRed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, upgradeUserToChirpyRed, id)
 	return err
 }

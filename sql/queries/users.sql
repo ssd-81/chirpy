@@ -26,6 +26,12 @@ hashed_password = $2
 WHERE id = $3;
 
 -- name: GetSpecificUserWithoutPassword :one
-SELECT id, created_at, updated_at, email FROM users
+SELECT id, created_at, updated_at, email, is_chirpy_red FROM users
 WHERE id = $1
 LIMIT 1;
+
+-- name: UpgradeUserToChirpyRed :exec
+UPDATE users SET
+updated_at = NOW(),
+is_chirpy_red = TRUE
+WHERE id = $1;

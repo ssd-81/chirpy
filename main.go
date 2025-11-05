@@ -28,18 +28,19 @@ type apiConfig struct {
 }
 
 type formattedChirp struct {
-	ID        uuid.UUID     `json:"id"`
-	CreatedAt time.Time     `json:"created_at"`
-	UpdatedAt time.Time     `json:"updated_at"`
-	Body      string        `json:"body"`
-	UserID    uuid.NullUUID `json:"user_id"`
-}
-
-type User struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+type User struct {
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type authParameters struct {
@@ -84,9 +85,13 @@ func main() {
 	serveMux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+	// webhooks handler
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhooks)
+
 	serveMux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpGet)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpGetSingle)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
 
 	server := http.Server{}
 	server.Handler = serveMux
@@ -143,10 +148,11 @@ func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 
 	// using User struct for controlling json keys
 	userJson := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	if err != nil {
 		respondWithError(w, 404, "user could not be created")
@@ -165,6 +171,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email        string    `json:"email"`
 		RefreshToken string    `json:"refresh_token"`
 		Token        string    `json:"token"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"` // exp
 	}
 
 	var logParams authParameters
@@ -240,6 +247,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        token,
 		RefreshToken: refreshToken,
+		IsChirpyRed:  user.IsChirpyRed.Bool,
 	}
 
 	respondWithJSON(w, 200, returnPayload)
@@ -306,7 +314,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			Body:      chirp.Body,
-			UserID:    uuid.NullUUID{UUID: chirp.UserID, Valid: true},
+			UserID:    chirp.UserID,
 		}
 		respondWithJSON(w, 201, strChirp)
 
@@ -325,7 +333,7 @@ func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: val.CreatedAt,
 			UpdatedAt: val.UpdatedAt,
 			Body:      val.Body,
-			UserID:    uuid.NullUUID{UUID: val.UserID, Valid: true},
+			UserID:    val.UserID,
 		}
 		slice = append(slice, temp)
 	}
@@ -348,7 +356,7 @@ func (cfg *apiConfig) handlerChirpGetSingle(w http.ResponseWriter, r *http.Reque
 		CreatedAt: chirp.CreatedAt,
 		UpdatedAt: chirp.UpdatedAt,
 		Body:      chirp.Body,
-		UserID:    uuid.NullUUID{UUID: chirp.UserID, Valid: true},
+		UserID:    chirp.UserID,
 	}
 	respondWithJSON(w, 200, fChirp)
 }
@@ -454,10 +462,11 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	type responsePayload struct {
-		Id        string    `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		Id          string    `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -465,6 +474,10 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 401, "something went wrong")
+		return
+	}
+	if params.Email == "" || params.Password == "" {
+		respondWithError(w, 400, "email and password are required")
 		return
 	}
 	jwtToken, err := auth.GetBearerToken(r.Header)
@@ -496,16 +509,96 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	}
 	updatedUser, err := cfg.dbQueries.GetSpecificUserWithoutPassword(r.Context(), userId)
 	rp := responsePayload{
-		Id: updatedUser.Email,
-		CreatedAt: updatedUser.UpdatedAt,
-		UpdatedAt: updatedUser.UpdatedAt,
-		Email: updatedUser.Email,
+		Id:          updatedUser.Email,
+		CreatedAt:   updatedUser.UpdatedAt,
+		UpdatedAt:   updatedUser.UpdatedAt,
+		Email:       updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed.Bool,
 	}
 	if err != nil {
 		respondWithError(w, 500, "could not retrieve updated user")
 	}
 	log.Print(rp)
 	respondWithJSON(w, 200, rp)
+
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	jwtToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "could not get access token")
+		return
+	}
+
+	userId, err := auth.ValidateJWT(jwtToken, cfg.serverSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid jwt")
+		return
+	}
+
+	Cid := r.PathValue("chirpID")
+	formattedCid := uuid.MustParse(Cid)
+
+	author, err := cfg.dbQueries.GetChirpAuthor(r.Context(), formattedCid)
+	if err != nil {
+		respondWithError(w, 404, "no such chirp exists")
+		return
+	}
+	if author != userId {
+		respondWithError(w, 403, "this chirp does not belong to you")
+		return
+	}
+	err = cfg.dbQueries.DeleteChirp(r.Context(), formattedCid)
+	if err != nil {
+		respondWithError(w, 500, "internal server error while deleting the chirp")
+		return
+	}
+	w.WriteHeader(204)
+
+}
+
+func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	
+	type dataStruct struct {
+		UserID string `json:"user_id"`
+	}
+	type requestPayload struct {
+		Event string     `json:"event"`
+		Data  dataStruct `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := requestPayload{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 400, "bad request")
+		return
+	}
+
+	// we only care about handling the user.upgraded event
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	userId, err := uuid.Parse(params.Data.UserID)
+	if err != nil {
+		respondWithError(w, 400, "bad request; invalid UID")
+		return
+	}
+
+	err = cfg.dbQueries.UpgradeUserToChirpyRed(r.Context(), userId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "no user found")
+			return
+		} else {
+			// i am quite sure that this can be improved; this is pretty vague if you think
+			respondWithError(w, 400, "bad request")
+			return
+		}
+	}
+	w.WriteHeader(204)
+	// empty payload
 
 }
 
