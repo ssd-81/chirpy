@@ -106,7 +106,28 @@ func GetBearerToken(headers http.Header) (string, error) {
 
 func MakeRefreshToken() (string, error) {
 	key := make([]byte, 32)
-	rand.Read(key) // Read never fails; that's a claim from official docs 
+	rand.Read(key) // Read never fails; that's a claim from official docs
 	encodedStr := hex.EncodeToString(key)
-	return encodedStr, nil 
+	return encodedStr, nil
+}
+
+func GetAPIKey(headers http.Header) (string, error) {
+	// Authorization: ApiKey THE_KEY_HERE
+	authToken := headers.Get("Authorization")
+	if authToken == "" {
+		return "", fmt.Errorf("no authorization header receiveed")
+	}
+
+	splitB := strings.Split(strings.TrimSpace(authToken), " ")
+	authStr := ""
+	if len(splitB) == 2 {
+		temp := strings.TrimSpace(splitB[0])
+		if temp != "ApiKey" {
+			return "", fmt.Errorf("invalid authorization token received")
+		}
+		authStr = strings.TrimSpace(splitB[1])
+	} else {
+		return "", fmt.Errorf("header Authorization does not contain API key")
+	}
+	return authStr, nil
 }

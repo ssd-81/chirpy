@@ -25,6 +25,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	serverSecret   string
+	apiKey         string
 }
 
 type formattedChirp struct {
@@ -55,6 +56,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	serverSecret := os.Getenv("SERVER_SECRET")
+	apiKey := os.Getenv("POLKA_KEY")
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -67,6 +69,7 @@ func main() {
 	apiCfg.dbQueries = dbQuer
 	apiCfg.platform = platform
 	apiCfg.serverSecret = serverSecret
+	apiCfg.apiKey = apiKey
 	serveMux := http.NewServeMux()
 	// serveMux.Handle("/app/", http.StripPrefix("/app", http.FileServer(http.Dir("."))))
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
@@ -322,10 +325,29 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
-	dbChirps, err := cfg.dbQueries.GetChirpsAsc(r.Context())
-	if err != nil {
-		respondWithError(w, 404, "error occured while retriving chirps")
+	authorParam := r.URL.Query().Get("author_id")
+	var dbChirps []database.Chirp
+	var err error
+
+	if authorParam != "" {
+		userId, err := uuid.Parse(authorParam)
+		if err != nil {
+			respondWithError(w, 400, "invalid user id in query parameter")
+			return
+		}
+		dbChirps, err = cfg.dbQueries.GetUserChirps(r.Context(), userId)
+		if err != nil {
+			respondWithError(w, 400, "no such user exists in the database")
+			return
+		}
+	} else {
+		dbChirps, err = cfg.dbQueries.GetChirpsAsc(r.Context())
+		if err != nil {
+			respondWithError(w, 404, "error occured while retriving chirps")
+		}
+
 	}
+
 	var slice []formattedChirp
 	for _, val := range dbChirps {
 		temp := formattedChirp{
@@ -337,6 +359,9 @@ func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 		}
 		slice = append(slice, temp)
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
 	json.NewEncoder(w).Encode(slice)
 
 }
@@ -558,7 +583,18 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
-	
+	authKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		log.Print(err.Error())
+		respondWithError(w, 401, "could not get API keys from headers")
+		return
+	}
+
+	if authKey != cfg.apiKey {
+		respondWithError(w, 401, "invalid API key")
+		return
+	}
+
 	type dataStruct struct {
 		UserID string `json:"user_id"`
 	}
@@ -569,7 +605,7 @@ func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Reques
 
 	decoder := json.NewDecoder(r.Body)
 	params := requestPayload{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, "bad request")
 		return
@@ -620,7 +656,8 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+// changed function signature: func respondWithJSON(w http.ResponseWithJSON, code int, payload interface{})
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 	dat, err := json.Marshal(payload)
 	if err != nil {
 		w.WriteHeader(500)
