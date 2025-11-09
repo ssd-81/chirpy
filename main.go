@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -326,6 +327,7 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 	authorParam := r.URL.Query().Get("author_id")
+	sortParam := r.URL.Query().Get("sort") // expects one of two values: asc or desc
 	var dbChirps []database.Chirp
 	var err error
 
@@ -346,6 +348,9 @@ func (cfg *apiConfig) handlerChirpGet(w http.ResponseWriter, r *http.Request) {
 			respondWithError(w, 404, "error occured while retriving chirps")
 		}
 
+	}
+	if sortParam == "desc" {
+		sort.Slice(dbChirps, func(i, j int) bool { return dbChirps[i].CreatedAt.After(dbChirps[j].CreatedAt) })
 	}
 
 	var slice []formattedChirp
